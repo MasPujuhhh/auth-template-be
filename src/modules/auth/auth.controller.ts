@@ -1,21 +1,51 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request } from 'express';
 
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { LoginDto } from './dto/login.dto';
+import { RegisterDto } from './dto/register.dto';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Post('login')
-  async login(@Body() body: LoginDto, @Req() req: Request) {
-    return this.authService.loginWithPassword(body, {
+  @Post('register')
+  @HttpCode(HttpStatus.CREATED)
+  async register(@Body() body: RegisterDto, @Req() req: Request) {
+    const tokens = await this.authService.register(body, {
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
     });
+
+    return {
+      message: 'Register success',
+      data: tokens,
+    };
+  }
+
+  @Post('login')
+  async login(@Body() body: LoginDto, @Req() req: Request) {
+    const tokens = await this.authService.loginWithPassword(body, {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+
+    return {
+      message: 'Login success',
+      data: tokens,
+    };
   }
 
   @Post('refresh')
@@ -46,15 +76,20 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
-  me(@CurrentUser('sub') userId: string) {
-    return this.authService.me(userId);
+  async me(@CurrentUser('sub') userId: string) {
+    const user = await this.authService.me(userId);
+
+    return {
+      message: 'Current user fetched successfully',
+      data: user,
+    };
   }
 
   private extractBearerToken(req: Request): string {
     const authHeader = req.headers.authorization;
 
     if (!authHeader?.startsWith('Bearer ')) {
-      throw new Error('Refresh token not found');
+      throw new UnauthorizedException('Refresh token not found');
     }
 
     return authHeader.split(' ')[1];

@@ -5,6 +5,7 @@ import { AuthService } from './auth.service';
 import { UsersModule } from '../users/users.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { JwtExpiresIn } from './auth.types';
+import { AuthController } from './auth.controller';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { JwtExpiresIn } from './auth.types';
       }),
     }),
   ],
+  controllers: [AuthController],
   providers: [AuthService],
   exports: [AuthService],
 })

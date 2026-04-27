@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuthProvider } from '@prisma/client';
 
 @Injectable()
 export class UsersService {
@@ -19,6 +20,26 @@ export class UsersService {
       where: {
         id,
         deletedAt: null,
+      },
+    });
+  }
+
+  async create(payload: {
+    email: string;
+    password?: string;
+    name?: string;
+    provider: AuthProvider;
+    providerId?: string;
+    avatar?: string;
+  }) {
+    return this.prisma.user.create({
+      data: {
+        email: payload.email,
+        password: payload.password,
+        name: payload.name,
+        provider: payload.provider,
+        providerId: payload.providerId,
+        avatar: payload.avatar,
       },
     });
   }

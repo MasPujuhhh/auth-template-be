@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   UnauthorizedException,
   //   InternalServerErrorException,
@@ -9,18 +10,8 @@ import * as bcrypt from 'bcrypt';
 import { UsersService } from '../users/users.service';
 import { SessionsService } from '../sessions/sessions.service';
 import { AuthTokens, JwtExpiresIn, TokenPayload } from './auth.types';
-
-// type JwtExpiresIn = `${number}${'s' | 'm' | 'h' | 'd'}`;
-
-// export interface AuthTokens {
-//   accessToken: string;
-//   refreshToken: string;
-// }
-
-// export interface TokenPayload {
-//   sub: string;
-//   email: string;
-// }
+import { randomUUID } from 'crypto';
+import { AuthProvider } from '@prisma/client';
 
 @Injectable()
 export class AuthService {
@@ -87,11 +78,39 @@ export class AuthService {
 
   // ─── Auth Operations ───────────────────────────────────────────────────────
 
+  async register(
+    payload: { email: string; password: string; name?: string },
+    meta?: { ipAddress?: string; userAgent?: string },
+  ): Promise<AuthTokens> {
+    const existingUser = await this.usersService.findByEmail(payload.email);
+
+    if (existingUser && !existingUser.deletedAt) {
+      throw new ConflictException('Email already registered');
+    }
+
+    const hashedPassword = await bcrypt.hash(payload.password, 10);
+
+    const user = await this.usersService.create({
+      email: payload.email,
+      password: hashedPassword,
+      name: payload.name,
+      provider: AuthProvider.LOCAL,
+    });
+
+    return this.login(
+      {
+        id: user.id,
+        email: user.email,
+      },
+      meta,
+    );
+  }
+
   async login(
     user: { id: string; email: string },
     meta?: { ipAddress?: string; userAgent?: string },
   ): Promise<AuthTokens> {
-    const sessionId = crypto.randomUUID();
+    const sessionId = randomUUID();
 
     const tokens = await this.generateTokens(user.id, user.email, sessionId);
 
@@ -142,8 +161,6 @@ export class AuthService {
     rawRefreshToken: string,
     meta?: { ipAddress?: string; userAgent?: string },
   ): Promise<AuthTokens> {
-    // BUG FIX 2: Verifikasi JWT dulu sebelum cari session di DB
-    // Kalau token palsu/expired, langsung throw tanpa query DB
     const payload = await this.jwtService
       .verifyAsync<TokenPayload>(rawRefreshToken, {
         secret: this.configService.getOrThrow<string>('jwt.refreshSecret'),
@@ -152,41 +169,26 @@ export class AuthService {
         throw new UnauthorizedException('Invalid refresh token');
       });
 
-    // BUG FIX 3: Cari session by userId, bukan findAllByUser (yang sebelumnya
-    // tidak dipanggil karena missing argument dan parentheses — bug kritis)
-    const sessions = await this.sessionsService.findAllByUser(payload.sub);
+    const session = await this.sessionsService.findById(payload.sessionId);
 
-    if (!sessions.length) {
+    if (!session || session.userId !== payload.sub) {
       throw new UnauthorizedException('Session not found');
     }
 
-    // BUG FIX 4: Promise.any bisa throw AggregateError jika semua reject —
-    // sudah ada .catch(() => null) tapi tetap lebih aman pakai for...of
-    // agar tidak ada silent error
-    let matchedSession: (typeof sessions)[number] | null = null;
-
-    for (const session of sessions) {
-      // BUG FIX 5: Lewati session yang sudah expired sebelum bcrypt.compare
-      if (session.expiredAt < new Date()) continue;
-
-      const isMatch = await bcrypt.compare(
-        rawRefreshToken,
-        session.refreshToken,
-      );
-      if (isMatch) {
-        matchedSession = session;
-        break;
-      }
+    if (session.expiredAt < new Date()) {
+      throw new UnauthorizedException('Refresh token expired');
     }
 
-    if (!matchedSession) {
+    const isMatch = await bcrypt.compare(rawRefreshToken, session.refreshToken);
+
+    if (!isMatch) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
-    // Rotate: hapus sesi lama, buat sesi baru
-    await this.sessionsService.revoke(matchedSession.id);
+    await this.sessionsService.revoke(session.id);
 
-    const newSessionId = crypto.randomUUID();
+    const newSessionId = randomUUID();
+
     const tokens = await this.generateTokens(
       payload.sub,
       payload.email,
@@ -214,8 +216,23 @@ export class AuthService {
 
   async me(userId: string) {
     const user = await this.usersService.findById(userId);
-    if (!user) throw new UnauthorizedException('User not found');
-    return user;
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    return {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      avatar: user.avatar,
+      role: user.role,
+      provider: user.provider,
+      isActive: user.isActive,
+      emailVerifiedAt: user.emailVerifiedAt,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    };
   }
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
